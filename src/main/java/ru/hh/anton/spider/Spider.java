@@ -15,16 +15,19 @@ import java.util.*;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Logger;
 
 /** Spides given url with given depth.<br>
  * Need external ClientBootstrap to perform spiding. */
 public class Spider {
 
+	private final static Logger logger = Logger.getLogger(Spider.class.getName());
+
 	private final URL startURL;
 	private final int depth;
 	private final ClientBootstrap clientBootstrap;
 
-	/** Set of known URLs is used while spiding not to get in loop */
+	/** Set of known URLs, is used not to get in loop while spiding */
 	private final Set<URL> knownURLs = new HashSet<URL>();
 
 	/** Container for channels that perform loading of urls */
@@ -55,9 +58,9 @@ public class Spider {
 			ChannelAndContent channelAndContent;
 
 			try {
-				// TODO: make timeout configurable
 				channelAndContent = this.unprocessedChannels.poll(5, TimeUnit.SECONDS);
 			} catch (InterruptedException e) {
+				logger.warning(this + ": interrupted");
 				closePendingChannels();
 				return this.processedURLs;
 			}
@@ -80,14 +83,13 @@ public class Spider {
 
 		for (Map.Entry<Channel, SpiderTask> entry: this.pendingChannels.entrySet()) {
 
+			logger.warning(this + ": closing hanging " + entry.getValue().getUrl());
 			entry.getKey().close().awaitUninterruptibly();
-			System.err.println("Closed hanging " + entry.getValue().getUrl());
 
 		}
 
 	}
 
-	@SuppressWarnings("UnusedReturnValue")
 	private boolean pendURL(final URL url, final int depth) {
 
 		if (this.knownURLs.contains(url)) {
@@ -95,13 +97,12 @@ public class Spider {
 		}
 
 		if (depth < 0) {
-			System.err.println("Can not spide " + url + " on " + depth + " depth!");
+			logger.warning(this + ": can not spide " + url + " on " + depth + " depth!");
 			return false;
 		}
 
-		// TODO: do we really support https?
 		if (!"http".equalsIgnoreCase(url.getProtocol()) && !"https".equalsIgnoreCase(url.getProtocol())) {
-			System.err.println("Failed to pend " + url + ": only HTTP(S) is supported!");
+			logger.warning(this + ": failed to pend " + url + ": only HTTP(S) is supported!");
 			return false;
 		}
 
@@ -117,23 +118,29 @@ public class Spider {
 
 		final SpiderTask spiderTask = new SpiderTask(url, depth);
 		this.pendingChannels.put(channel, spiderTask);
-		System.out.println("Pended " + url + " depth " + depth);
 
 		channelFuture.addListener(new ChannelFutureWriter(url));
+
+		logger.info(this + ": loading " + url + " depth " + depth + " channel " + channel.getId());
 
 		return true;
 
 	}
 
+	/** Adds loaded content to the queue for processing */
 	void contentReady(final Channel channel, final String content) {
 
 		this.unprocessedChannels.add(new ChannelAndContent(channel, content));
+		logger.info(this + ": channel " + channel.getId() + ": finished loading");
 
 	}
 
 	private void processContent(final Channel channel, final String content) {
 
 		final SpiderTask spiderTask = this.pendingChannels.get(channel);
+
+		logger.info(this + ": processing " + spiderTask.getUrl());
+
 		this.pendingChannels.remove(channel);
 
 		this.processedURLs.add(new URLAndContent(spiderTask.getUrl(), content));
@@ -143,7 +150,7 @@ public class Spider {
 			this.pendURLsFromContent(content, depth - 1);
 		}
 
-		System.out.println("Processed " + spiderTask.getUrl());
+		logger.info(this + ": processed " + spiderTask.getUrl());
 
 	}
 
@@ -165,6 +172,11 @@ public class Spider {
 
 		}
 
+	}
+
+	@Override
+	public String toString() {
+		return "Spider from " + this.startURL;
 	}
 
 }

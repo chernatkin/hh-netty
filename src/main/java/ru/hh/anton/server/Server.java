@@ -8,8 +8,11 @@ import ru.hh.anton.spider.SpiderPipelineFactory;
 
 import java.net.InetSocketAddress;
 import java.util.concurrent.Executors;
+import java.util.logging.Logger;
 
 class Server {
+
+	private final static Logger logger = Logger.getLogger(Server.class.getName());
 
 	private final int port;
 
@@ -34,6 +37,8 @@ class Server {
 		bootstrap.setPipelineFactory(new ServerPipelineFactory(clientBootstrap));
 
 		bootstrap.bind(new InetSocketAddress(port));
+
+		logger.info("HTTP spider server started on port " + port);
 
 		// I do not stop server properly. But neither do netty examples: http://netty.io/wiki/index.html
 

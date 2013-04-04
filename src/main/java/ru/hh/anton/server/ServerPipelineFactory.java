@@ -10,7 +10,8 @@ import org.jboss.netty.handler.codec.http.HttpResponseEncoder;
 
 class ServerPipelineFactory implements ChannelPipelineFactory{
 
-	private final ServerHandler serverHandler;
+	/** Final business-logic handler */
+	private final ServerHandler serverHandler; // is stateless, we can share it among pipelines
 
 	ServerPipelineFactory(final ClientBootstrap clientBootstrap) {
 

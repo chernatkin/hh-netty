@@ -6,7 +6,11 @@ import org.jboss.netty.handler.codec.http.HttpChunk;
 import org.jboss.netty.handler.codec.http.HttpResponse;
 import org.jboss.netty.util.CharsetUtil;
 
+import java.util.logging.Logger;
+
 class SpiderHandler extends SimpleChannelUpstreamHandler {
+
+	private final static Logger logger = Logger.getLogger(SpiderHandler.class.getName());
 
 	private HttpResponse response;
 	private final StringBuilder contentBuilder = new StringBuilder();
@@ -45,10 +49,8 @@ class SpiderHandler extends SimpleChannelUpstreamHandler {
 	@Override
 	public void exceptionCaught(final ChannelHandlerContext channelHandlerContext, final ExceptionEvent exceptionEvent) {
 
-		// TODO: log
-		exceptionEvent.getCause().printStackTrace();
-		exceptionEvent.getChannel().close();
-
+		logger.warning("Channel " + channelHandlerContext.getChannel().getId() + ": caught " + exceptionEvent.getCause().getLocalizedMessage());
+		channelHandlerContext.getChannel().close();
 		// TODO: remove from pendingChannels
 
 	}

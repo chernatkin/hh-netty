@@ -1,4 +1,6 @@
 *.class
+*.log
+*.lck
 
 # Package Files #
 *.jar
