@@ -5,11 +5,12 @@ import org.jboss.netty.channel.socket.nio.NioClientSocketChannelFactory;
 
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.util.List;
 import java.util.concurrent.Executors;
 
 public class SpiderStarter {
 
-	public static void main(String[] args) throws MalformedURLException {
+	public static void main(String[] args) throws MalformedURLException, InterruptedException {
 
 		// check args
 		if (args.length != 2) {
@@ -22,16 +23,18 @@ public class SpiderStarter {
 		final int depth = Integer.parseInt(args[1]);
 
 		// prepare bootstrap for spider
-		final ClientBootstrap clientBootstrap = new ClientBootstrap(
+		final ClientBootstrap spiderBootstrap = new ClientBootstrap(
 				new NioClientSocketChannelFactory(
 						Executors.newCachedThreadPool(),
 						Executors.newCachedThreadPool()));
-		clientBootstrap.setPipelineFactory(new SpiderPipelineFactory());
-		clientBootstrap.setOption("connectTimeoutMillis", 1000);
+		spiderBootstrap.setPipelineFactory(new SpiderPipelineFactory());
 
-		// create and run spider
-		final Spider spider = new Spider(clientBootstrap);
-		spider.spideURL(url, depth);
+		// perform spiding
+		final List<URLAndContent> urlsAndContent = new Spider(url, depth, spiderBootstrap).spide();
+
+		spiderBootstrap.releaseExternalResources();
+
+		System.out.println("Spided " + urlsAndContent.size() + " urls");
 
 	}
 

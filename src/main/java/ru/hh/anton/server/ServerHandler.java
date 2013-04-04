@@ -1,16 +1,33 @@
 package ru.hh.anton.server;
 
+import org.jboss.netty.bootstrap.ClientBootstrap;
 import org.jboss.netty.buffer.ChannelBuffers;
 import org.jboss.netty.channel.*;
 import org.jboss.netty.handler.codec.http.*;
 import org.jboss.netty.util.CharsetUtil;
+import ru.hh.anton.spider.Spider;
+import ru.hh.anton.spider.URLAndContent;
 
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.PrintWriter;
+import java.io.UnsupportedEncodingException;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.net.URLEncoder;
 import java.util.List;
 import java.util.Map;
 
+@SuppressWarnings("StringConcatenationInsideStringBufferAppend")
 class ServerHandler extends SimpleChannelUpstreamHandler {
+
+	private final ClientBootstrap spiderBootstrap;
+
+	ServerHandler(ClientBootstrap spiderBootstrap) {
+
+		this.spiderBootstrap = spiderBootstrap;
+
+	}
 
 	@Override
 	public void messageReceived(final ChannelHandlerContext channelHandlerContext, final MessageEvent messageEvent) {
@@ -32,13 +49,16 @@ class ServerHandler extends SimpleChannelUpstreamHandler {
 			return;
 		}
 
-		// TODO: spide
+		this.spideAndRespond(url, depth, messageEvent.getChannel());
 
-		final StringBuilder responseBuilder = new StringBuilder();
-		responseBuilder.append("url: " + url);
-		responseBuilder.append("\r\ndepth: " + depth);
+	}
 
-		writeResponse(messageEvent.getChannel(), responseBuilder.toString());
+	@Override
+	public void exceptionCaught(ChannelHandlerContext ctx, ExceptionEvent e) {
+
+		// TODO: log
+		e.getCause().printStackTrace();
+		e.getChannel().close();
 
 	}
 
@@ -107,26 +127,79 @@ class ServerHandler extends SimpleChannelUpstreamHandler {
 
 	}
 
-	private void writeResponse(final Channel channel, final String reponseString) {
+	/** Spides given url on given depth async and writes respond to the given channel */
+	private void spideAndRespond(final URL url, final int depth, final Channel channel) {
 
-		// Build the response object.
-		final HttpResponse response = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
-		response.setContent(ChannelBuffers.copiedBuffer(reponseString, CharsetUtil.UTF_8));
-		response.setHeader(HttpHeaders.Names.CONTENT_TYPE, "text/plain; charset=UTF-8");
+		// TODO: thread pool
+		new Thread(new Runnable() {
 
-		// Write the response & close connection
-		final ChannelFuture future = channel.write(response);
-		future.addListener(ChannelFutureListener.CLOSE);
+			@Override
+			public void run() {
+
+				final List<URLAndContent> urlsAndContent = new Spider(url, depth, spiderBootstrap).spide();
+
+				for (URLAndContent urlAndContent: urlsAndContent) {
+					saveContentToFile(urlAndContent.getUrl(), urlAndContent.getContent());
+				}
+
+				final StringBuilder responseBuilder = new StringBuilder();
+				responseBuilder.append("You requested to spide:");
+				responseBuilder.append("\r\nurl: " + url);
+				responseBuilder.append("\r\ndepth: " + depth);
+				responseBuilder.append("\r\n");
+				responseBuilder.append("\r\nWe spided:");
+				responseBuilder.append("\r\n" + urlsAndContent.size() + " urls");
+
+				writeResponse(channel, responseBuilder.toString());
+
+			}
+		}).start();
 
 	}
 
-	@Override
-	public void exceptionCaught(ChannelHandlerContext ctx, ExceptionEvent e)
-			throws Exception {
+	private static void saveContentToFile(final URL url, final String content) {
 
-		// TODO: log
-		e.getCause().printStackTrace();
-		e.getChannel().close();
+		final String urlPath = url.getPath().length() > 0 ? url.getPath() : "/";
+
+		String fileName;
+		try {
+			fileName = URLEncoder.encode(urlPath, "UTF-8");
+		} catch (final UnsupportedEncodingException e) {
+			// TODO: log
+			System.err.println("Failed to save url '" + url + "': " + e.getLocalizedMessage());
+			return;
+		}
+
+		// TODO: make folder configurable
+		final String path = "content/" + url.getHost() + "/";
+		//noinspection ResultOfMethodCallIgnored
+		new File(path).mkdirs();
+
+		PrintWriter printWriter;
+		try {
+			printWriter = new PrintWriter(path + fileName);
+		} catch (FileNotFoundException e) {
+			System.err.println("Failed to save url '" + url + "': " + e.getLocalizedMessage());
+			return;
+		}
+
+		printWriter.println(content);
+		printWriter.close();
+
+	}
+
+	/** Writes responseString to the give channel as HttpResponse */
+	private void writeResponse(final Channel channel, final String responseString) {
+
+		// Build the response object.
+		final HttpResponse response = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
+		response.setContent(ChannelBuffers.copiedBuffer(responseString, CharsetUtil.UTF_8));
+		response.setHeader(HttpHeaders.Names.CONTENT_TYPE, "text/plain; charset=UTF-8");
+
+		// Write to channel and close
+		final ChannelFuture future = channel.write(response);
+		future.addListener(ChannelFutureListener.CLOSE);
+
 	}
 
 }

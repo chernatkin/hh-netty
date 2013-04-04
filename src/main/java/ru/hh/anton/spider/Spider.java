@@ -3,117 +3,167 @@ package ru.hh.anton.spider;
 import org.jboss.netty.bootstrap.ClientBootstrap;
 import org.jboss.netty.channel.Channel;
 import org.jboss.netty.channel.ChannelFuture;
-import org.jboss.netty.channel.ChannelFutureListener;
-import org.jboss.netty.handler.codec.http.*;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
 
 import java.net.InetSocketAddress;
+import java.net.MalformedURLException;
 import java.net.URL;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.*;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
+/** Spides given url with given depth.<br>
+ * Need external ClientBootstrap to perform spiding. */
 public class Spider {
 
+	private final URL startURL;
+	private final int depth;
 	private final ClientBootstrap clientBootstrap;
-	/** Map of urls to their statuses: false - if url is in work, true - if url is done */
-	private final ConcurrentHashMap<URL, Boolean> urlsStatuses = new ConcurrentHashMap<URL, Boolean>();
 
-	public Spider(final ClientBootstrap clientBootstrap) {
+	/** Set of known URLs is used while spiding not to get in loop */
+	private final Set<URL> knownURLs = new HashSet<URL>();
 
+	/** Container for channels that perform loading of urls */
+	private final Map<Channel, SpiderTask> pendingChannels = new HashMap<Channel, SpiderTask>();
+
+	/** Queue of channels that successfully loaded content of urls */
+	private final BlockingQueue<ChannelAndContent> unprocessedChannels = new LinkedBlockingQueue<ChannelAndContent>();
+
+	/** List of urls and their contents */
+	private final List<URLAndContent> processedURLs = new LinkedList<URLAndContent>();
+
+	public Spider(final URL startURL, final int depth, ClientBootstrap clientBootstrap) {
+
+		this.startURL = startURL;
+		this.depth = depth;
 		this.clientBootstrap = clientBootstrap;
 
 	}
 
-	public void spideURL(final URL url, final int depth) {
+	/** Performs spiding.
+	 * @return list of urls and their content.*/
+	public List<URLAndContent> spide() {
 
-		// TODO: do we need to put and write synchronously?
-		final Boolean prevValue = this.urlsStatuses.putIfAbsent(url, Boolean.FALSE);
-		if (prevValue != null) {
-			return;
-		}
+		pendURL(this.startURL, this.depth);
 
-		// TODO: can we really create url without protocol?
-		final String protocol = url.getProtocol() == null ? "http" : url.getProtocol();
+		while (pendingChannels.size() > 0) {
 
-		int port = url.getPort();
-		if (port == -1) {
-			if ("http".equalsIgnoreCase(protocol)) {
-				port = 80;
-			} else if ("https".equalsIgnoreCase(protocol)) {
-				port = 443;
+			ChannelAndContent channelAndContent;
+
+			try {
+				// TODO: make timeout configurable
+				channelAndContent = this.unprocessedChannels.poll(5, TimeUnit.SECONDS);
+			} catch (InterruptedException e) {
+				closePendingChannels();
+				return this.processedURLs;
 			}
+
+			// if no new content was added within specified timeout - return
+			if(channelAndContent == null) {
+				closePendingChannels();
+				return this.processedURLs;
+			}
+
+			this.processContent(channelAndContent.getChannel(), channelAndContent.getContent());
+
 		}
 
-		if (!"http".equalsIgnoreCase(protocol) && !"https".equalsIgnoreCase(protocol)) {
-			System.err.println("Only HTTP(S) is supported.");
-			return;
+		return this.processedURLs;
+
+	}
+
+	private void closePendingChannels() {
+
+		for (Map.Entry<Channel, SpiderTask> entry: this.pendingChannels.entrySet()) {
+
+			entry.getKey().close().awaitUninterruptibly();
+			System.err.println("Closed hanging " + entry.getValue().getUrl());
+
 		}
 
-		System.out.println("Spiding " + url + " with depth " + depth);
+	}
 
-		final SpiderTask spiderTask = new SpiderTask(url, depth, this);
+	@SuppressWarnings("UnusedReturnValue")
+	private boolean pendURL(final URL url, final int depth) {
+
+		if (this.knownURLs.contains(url)) {
+			return false;
+		}
+
+		if (depth < 0) {
+			System.err.println("Can not spide " + url + " on " + depth + " depth!");
+			return false;
+		}
+
+		// TODO: do we really support https?
+		if (!"http".equalsIgnoreCase(url.getProtocol()) && !"https".equalsIgnoreCase(url.getProtocol())) {
+			System.err.println("Failed to pend " + url + ": only HTTP(S) is supported!");
+			return false;
+		}
+
+		this.knownURLs.add(url);
+
+		final int port = url.getPort() != -1 ? url.getPort() : url.getDefaultPort();
 		final ChannelFuture channelFuture = clientBootstrap.connect(new InetSocketAddress(url.getHost(), port));
-		channelFuture.addListener(new ChannelFutureWriter(spiderTask));
+
+		// TODO: can channelFuture connect between these lines of code?
+
+		final Channel channel = channelFuture.getChannel();
+		channel.setAttachment(this);
+
+		final SpiderTask spiderTask = new SpiderTask(url, depth);
+		this.pendingChannels.put(channel, spiderTask);
+		System.out.println("Pended " + url + " depth " + depth);
+
+		channelFuture.addListener(new ChannelFutureWriter(url));
+
+		return true;
 
 	}
 
-	private static class ChannelFutureWriter implements ChannelFutureListener {
+	void contentReady(final Channel channel, final String content) {
 
-		private final SpiderTask spiderTask;
+		this.unprocessedChannels.add(new ChannelAndContent(channel, content));
 
-		private ChannelFutureWriter(final SpiderTask spiderTask) {
-			this.spiderTask = spiderTask;
+	}
+
+	private void processContent(final Channel channel, final String content) {
+
+		final SpiderTask spiderTask = this.pendingChannels.get(channel);
+		this.pendingChannels.remove(channel);
+
+		this.processedURLs.add(new URLAndContent(spiderTask.getUrl(), content));
+
+		final int depth = spiderTask.getDepth();
+		if (depth > 0) {
+			this.pendURLsFromContent(content, depth - 1);
 		}
 
-		@Override
-		public void operationComplete(final ChannelFuture channelFuture) throws Exception {
+		System.out.println("Processed " + spiderTask.getUrl());
 
-			final Channel channel = channelFuture.getChannel();
-			if (!channelFuture.isSuccess()) {
-				// TODO: log
-				channelFuture.getCause().printStackTrace();
-				return;
+	}
+
+	private void pendURLsFromContent(final String content, final int depth) {
+
+		final Document document = Jsoup.parse(content);
+		final Elements elements = document.getElementsByTag("a");
+		for (Element element : elements) {
+
+			String href = element.attr("href");
+			URL url;
+			try {
+				url = new URL(href);
+			} catch (MalformedURLException e) {
+				continue;
 			}
 
-			channel.setAttachment(spiderTask);
-
-			final URL url = spiderTask.getUrl();
-			final String originalPath = url.getPath();
-			final String correctedPath = originalPath.length() > 0 ? originalPath : "/";
-			final HttpRequest request = new DefaultHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, correctedPath);
-			request.setHeader(HttpHeaders.Names.HOST, url.getHost());
-			request.setHeader(HttpHeaders.Names.CONNECTION, HttpHeaders.Values.CLOSE);
-			request.setHeader(HttpHeaders.Names.ACCEPT_ENCODING, HttpHeaders.Values.GZIP);
-
-			channel.write(request);
-
-			// TODO: do we need to close something?
+			this.pendURL(url, depth);
 
 		}
-	}
-
-	public void markURLFinished(final URL url) {
-
-		this.urlsStatuses.put(url, Boolean.TRUE);
-
-	}
-
-	public boolean hasPendingURLs() {
-
-		// TODO: slow!
-		return urlsStatuses.containsValue(Boolean.FALSE);
-
-	}
-
-	// TODO: remove!
-	public String getPendingURLs() {
-
-		final StringBuilder stringBuilder = new StringBuilder();
-		for (ConcurrentHashMap.Entry<URL, Boolean> entry: this.urlsStatuses.entrySet()) {
-			if (!entry.getValue()) {
-				stringBuilder.append(" " + entry.getKey());
-			}
-		}
-
-		return stringBuilder.toString();
 
 	}
 
